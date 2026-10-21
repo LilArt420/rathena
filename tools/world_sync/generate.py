@@ -295,6 +295,87 @@ def service_script(role, n, mp, x, y):
     return None
 
 
+# Roles that only the --placeholders output (an optional mod) gets: services that work from
+# data alone but stay out of the server, which leaves storage and travel to rAthena's NPCs.
+EXTRA_ROLES = [(r'^storage locker$', 'locker'), (r'^guild storage manager$', 'guild'),
+               (r'^inn employee$', 'inn'), (r'^repairman$', 'repair'), (r'^switch channel$', 'channel'),
+               (r'^warp elevator$', 'elevator'), (r'^contact point$', 'contact'), (r'^guide$', 'guide')]
+CHANNEL_PAIRS = {'bphunt_low': 'bphunt_low2', 'bphunt_mid': 'bphunt_mid2', 'bphunt_high': 'bphunt_hi2'}
+CHANNEL_PAIRS.update({v: k for k, v in list(CHANNEL_PAIRS.items())})
+SERVICE_NAMES = re.compile(r'storage|locker|kafra|dispenser|catalog|exchange|merchant|shop|dealer|repair|inn|guide|clerk', re.I)
+
+
+def extra_role(name):
+    for pat, role in EXTRA_ROLES:
+        if re.search(pat, name.strip(), re.I):
+            return role
+    return None
+
+
+def extra_script(role, n, mp, x, y, ctx):
+    """The body of a service-role placeholder; ctx has 'contacts' [(map, x, y)], 'names' {map: name},
+    'loaded' (maps), 'marks' {map: [(x, y, label)]}."""
+    say = '\tmes "[%s]";\n' % n
+    if role == 'locker':
+        return (say + '\tmes "Storage is ^0000FF40 zeny^000000.";\n\tif (select("Open storage:Cancel") == 2) close;\n'
+                '\tif (Zeny < 40) {\n\t\tmes "You don\'t have enough zeny.";\n\t\tclose;\n\t}\n'
+                '\tZeny -= 40;\n\tclose2;\n\topenstorage;\n\tend;\n')
+    if role == 'guild':
+        return (say + '\tif (!getcharid(2)) {\n\t\tmes "Only guild members can use the guild storage.";\n\t\tclose;\n\t}\n'
+                '\tmes "Your guild\'s storage is ^0000FF200 zeny^000000.";\n\tif (select("Open it:Cancel") == 2) close;\n'
+                '\tif (Zeny < 200) {\n\t\tmes "You don\'t have enough zeny.";\n\t\tclose;\n\t}\n'
+                '\tZeny -= 200;\n\tclose2;\n\tguildopenstorage;\n\tend;\n')
+    if role == 'inn':
+        return (say + '\tmes "A night\'s rest is ^0000FF5,000 zeny^000000. I\'ll also note this inn as your return point.";\n'
+                '\tif (select("Rest here:Save my return point here:Cancel") == 3) close;\n'
+                '\tif (@menu == 2) {\n\t\tsavepoint "%s",%d,%d,1,1;\n\t\tmes "Saved. You\'ll return here.";\n\t\tclose;\n\t}\n'
+                '\tif (Zeny < 5000) {\n\t\tmes "You don\'t have enough zeny.";\n\t\tclose;\n\t}\n'
+                '\tZeny -= 5000;\n\tpercentheal 100,100;\n\tsavepoint "%s",%d,%d,1,1;\n'
+                '\tmes "Sleep well. You\'re fully rested, and you\'ll return here.";\n\tclose;\n' % (mp, x, y, mp, x, y))
+    if role == 'repair':
+        return (say + '\tif (!getbrokenid(1)) {\n\t\tmes "Nothing of yours is broken. Come back if something is.";\n\t\tclose;\n\t}\n'
+                '\tmes "I can mend everything you carry for ^0000FF5,000 zeny^000000.";\n\tif (select("Repair it all:Cancel") == 2) close;\n'
+                '\tif (Zeny < 5000) {\n\t\tmes "You don\'t have enough zeny.";\n\t\tclose;\n\t}\n'
+                '\tZeny -= 5000;\n\trepairall;\n\tmes "Good as new.";\n\tclose;\n')
+    if role == 'channel':
+        other = CHANNEL_PAIRS.get(mp)
+        if not other or other not in ctx['loaded']:
+            return None
+        return (say + '\tmes "Switch to the other channel of this hunting ground?";\n\tif (select("Switch channel:Cancel") == 2) close;\n'
+                '\tgetmapxy(.@m$, .@x, .@y, BL_PC);\n\tclose2;\n\twarp "%s", .@x, .@y;\n\tend;\n' % other)
+    if role == 'elevator':
+        floors = [m for m in ('vr_zrr01', 'vr_zrr02', 'vr_zrr03') if m in ctx['loaded'] and m != mp]
+        if not floors:
+            return None
+        menu = ':'.join(ctx['names'].get(m, m) for m in floors)
+        cases = ''.join('\tif (.@f == %d) warp "%s", 0, 0;\n' % (i + 1, m) for i, m in enumerate(floors))
+        return say + '\tmes "Which floor?";\n\t.@f = select("%s:Cancel");\n\tclose2;\n%s\tend;\n' % (esc(menu), cases)
+    if role == 'contact':
+        pts = ctx['contacts']
+        if len(pts) < 2:
+            return None
+        key = 'ws_cp_%s' % re.sub(r'[^a-z0-9]', '_', mp)
+        lines = [say, '\tif (!%s) {\n\t\t%s = 1;\n\t\tmes "Contact point registered: ^0000FF%s^000000.";\n\t\tnext;\n\t\tmes "[%s]";\n\t}\n'
+                 % (key, key, esc(ctx['names'].get(mp, mp)), n),
+                 '\tmes "Where to? You can travel to every contact point you\'ve touched.";\n', '\t.@menu$ = "";\n']
+        for i, (pm, px, py) in enumerate(pts):
+            k = 'ws_cp_%s' % re.sub(r'[^a-z0-9]', '_', pm)
+            lines.append('\t.@menu$ += ((%s && "%s" != "%s") ? "%s" : "") + ":";\n' % (k, pm, mp, esc(ctx['names'].get(pm, pm))))
+        lines.append('\t.@c = select(.@menu$ + "Stay here") - 1;\n\tclose2;\n')
+        for i, (pm, px, py) in enumerate(pts):
+            lines.append('\tif (.@c == %d) warp "%s", %d, %d;\n' % (i, pm, px, py + 1))
+        return ''.join(lines) + '\tend;\n'
+    if role == 'guide':
+        marks = [m for m in ctx['marks'].get(mp, []) if (m[0], m[1]) != (x, y)][:12]
+        if not marks:
+            return None
+        pts = ''.join('\tviewpoint 1, %d, %d, %d, 0xFF8800;\n' % (mx, my, i + 1) for i, (mx, my, _) in enumerate(marks))
+        names = ', '.join(sorted({lbl for _, _, lbl in marks}))
+        return (say + '\tmes "I\'ve marked this market\'s services on your minimap: %s.";\n' % esc(names) + pts +
+                '\tclose;\n')                               # the marks stay until the next map
+    return None
+
+
 def npc_role(name):
     low = name.lower()
     if re.search(r'kafra (?:employee|transport|staff|service)', low):
@@ -488,7 +569,7 @@ def main():
                     return cx, cy
         return x, y
 
-    npcs, placeholders, seen = [], [], set()
+    npcs, placeholders, ph_rows, seen = [], [], [], set()
     for tag, r in nv['npc']:
         mp, name = str(r.get(1, '')).lower(), str(r.get(5, '') or '')
         x, y, sprite = r.get(7, 0), r.get(8, 0), r.get(4, 0)
@@ -531,8 +612,7 @@ def main():
         if body:
             report['working NPCs (%s)' % role].append('%s %s' % (mp, n))
         else:
-            placeholders.append('%s,%d,%d,4\tscript\t%s#ws%d\t%s,{\n\tmes "[%s]";\n\tmes "Hello there, adventurer.";\n\tclose;\n}'
-                                % (mp, x, y, n, r.get(2, 0), '4_M_01' if sprite == 'FALLBACK' else sprite, esc(n)))
+            ph_rows.append((mp, x, y, n, 'ws%d' % r.get(2, 0), '4_M_01' if sprite == 'FALLBACK' else sprite))
             continue
         npcs.append('%s,%d,%d,4\tscript\t%s#ws%d\t%s,{\n%s}' % (mp, x, y, n, r.get(2, 0), '4_M_01' if sprite == 'FALLBACK' else sprite, body))
 
@@ -553,9 +633,33 @@ def main():
                 continue                           # marks an NPC that is there
             n = npc_name(label)
             taken[mp].add((x, y))
-            placeholders.append('%s,%d,%d,4\tscript\t%s#wsb%d\t4_M_01,{\n\tmes "[%s]";\n'
-                        '\tmes "Hello there, adventurer.";\n\tclose;\n}' % (mp, x, y, n, i, esc(n)))
+            ph_rows.append((mp, x, y, n, 'wsb%d' % i, '4_M_01'))
             report['NPCs placed at a signboard with nothing under it'].append('%s %s' % (mp, n))
+
+    # --- placeholders: service roles get a working body, the rest a greeting
+    names = {}
+    for d, enc, tag in dirs:
+        for suffix in ('_us', '_krpri', ''):
+            pth = os.path.join(d, 'navi_map%s.lub' % suffix)
+            if os.path.exists(pth):
+                for r in luadata.ordered_lines(luadata.run([pth], enc).get('Navi_Map') or {}):
+                    if isinstance(r, dict) and r.get(1) and r.get(2) and re.fullmatch(r'[ -~]+', str(r[2])):
+                        names.setdefault(str(r[1]).lower(), str(r[2]))
+                break
+    marks = collections.defaultdict(list)
+    for mp, x, y, n, nid, spr in ph_rows:
+        if SERVICE_NAMES.search(n) and not re.fullmatch(r'guide', n.strip(), re.I):
+            marks[mp].append((x, y, n.strip()))
+    ctx = {'contacts': [(mp, x, y) for mp, x, y, n, nid, spr in ph_rows if extra_role(n) == 'contact'],
+           'names': names, 'loaded': loaded, 'marks': marks}
+    for mp, x, y, n, nid, spr in ph_rows:
+        role = extra_role(n)
+        body = extra_script(role, esc(n), mp, x, y, ctx) if role else None
+        if body:
+            report['placeholders that work (%s)' % role].append('%s %s' % (mp, n))
+        else:
+            body = '\tmes "[%s]";\n\tmes "Hello there, adventurer.";\n\tclose;\n' % esc(n)
+        placeholders.append('%s,%d,%d,4\tscript\t%s#%s\t%s,{\n%s}' % (mp, x, y, n, nid, spr, body))
 
     # --- write
     out = os.path.join(root, 'npc', 're', 'world_sync')
