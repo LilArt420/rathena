@@ -404,6 +404,8 @@ def main():
                                            'e.g. for a mod; without it they are left out')
     ap.add_argument('--entrances', help="write the links from rAthena's maps into the maps world sync fills "
                                         "to this file, for an opt-in mod (players need those maps in their client)")
+    ap.add_argument('--exclude-ids', action='append', default=[],
+                    help='files of navi ids (or a-b ranges) whose placeholders another mod now implements')
     ap.add_argument('--report')
     a = ap.parse_args()
     root = os.path.abspath(a.rathena)
@@ -652,7 +654,15 @@ def main():
             marks[mp].append((x, y, n.strip()))
     ctx = {'contacts': [(mp, x, y) for mp, x, y, n, nid, spr in ph_rows if extra_role(n) == 'contact'],
            'names': names, 'loaded': loaded, 'marks': marks}
+    excluded = set()
+    for f in a.exclude_ids:
+        for tok in re.sub(r'#.*', '', open(f, encoding='utf-8').read()).split():
+            lo, _, hi = tok.partition('-')
+            excluded |= set(range(int(lo), int(hi or lo) + 1))
     for mp, x, y, n, nid, spr in ph_rows:
+        if nid.startswith('ws') and nid[2:].isdigit() and int(nid[2:]) in excluded:
+            report['placeholders another mod implements (left out)'].append('%s %s' % (mp, n))
+            continue
         role = extra_role(n)
         body = extra_script(role, esc(n), mp, x, y, ctx) if role else None
         if body:
