@@ -48,3 +48,15 @@
 Header:
   Type: QUEST_DB
   Version: 3
+
+Body:
+  # CI repro: quest 13095 declared again, exactly as db/re and db/pre-re have it.
+  - Id: 13095
+    Title: Geffenia expedition
+    Targets:
+      - Mob: INCUBUS
+        Count: 10
+      - Mob: SUCCUBUS
+        Count: 10
+      - Mob: VIOLY
+        Count: 10
